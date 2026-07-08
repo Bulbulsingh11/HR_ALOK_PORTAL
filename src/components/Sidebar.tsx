@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import { PageId } from '../types';
 import AlokLogo from './AlokLogo';
+import defaultAvatar from '../assets/images/regenerated_image_1783498422121.jpg';
 
 interface SidebarProps {
   activePage: PageId;
@@ -159,7 +160,7 @@ export default function Sidebar({
               <div className="flex items-center gap-2">
                 <div className="h-8 w-8 rounded-full bg-slate-200 overflow-hidden">
                   <img 
-                    src="/images/regenerated_image_1783498422121.jpg" 
+                    src={defaultAvatar} 
                     alt={userName} 
                     referrerPolicy="no-referrer"
                     className="h-full w-full object-cover" 

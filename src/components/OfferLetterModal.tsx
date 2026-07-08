@@ -12,6 +12,7 @@ import html2canvas from 'html2canvas-pro';
 import AlokLogo from './AlokLogo';
 import { isSupabaseConfigured, supabase } from '../lib/supabase';
 import { sendEmail } from '../lib/emailService';
+import alokLogo from '../assets/alok-logo.png';
 
 interface OfferLetterModalProps {
   candidate: Candidate;
@@ -752,7 +753,7 @@ useEffect(() => {
                         display: 'flex',
                         justifyContent: 'end'
                       }}>
-                        <img src="/alok-logo.png" alt="ALOK Logo" style={{ height: '45px', width: 'auto', objectFit: 'contain', mixBlendMode: 'multiply' }} />
+                        <img src={alokLogo} alt="ALOK Logo" style={{ height: '45px', width: 'auto', objectFit: 'contain', mixBlendMode: 'multiply' }} />
                       </div>
 
                       {/* Content Area */}

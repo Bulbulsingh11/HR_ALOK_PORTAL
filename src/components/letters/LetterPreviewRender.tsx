@@ -1,5 +1,6 @@
 import React, { useRef, useState, useEffect, useMemo, useLayoutEffect } from 'react';
 import { LetterData } from './types';
+import alokLogo from '../../assets/alok-logo.png';
 
 function numberToWords(num: number): string {
   if (isNaN(num) || !isFinite(num)) return '';
@@ -110,7 +111,7 @@ const A4Page = ({ children, companyName, hideFooter = false }: { children: React
         display: 'flex',
         justifyContent: 'end'
       }}>
-        <img src="/alok-logo.png" alt="ALOK Logo" style={{ height: '45px', width: 'auto', objectFit: 'contain', mixBlendMode: 'multiply' }} />
+        <img src={alokLogo} alt="ALOK Logo" style={{ height: '45px', width: 'auto', objectFit: 'contain', mixBlendMode: 'multiply' }} />
       </div>
 
       <div className="page-content" style={{ flex: 1, overflow: 'visible' }}>

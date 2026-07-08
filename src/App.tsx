@@ -18,6 +18,7 @@ import FeedbackFormsView from './components/FeedbackFormsView';
 import ReportsView from './components/ReportsView';
 import PortalGuideView from './components/PortalGuideView';
 import { HRDataProvider } from './lib/hrDataBridge';
+import defaultAvatar from './assets/images/regenerated_image_1783498425109.jpg';
 
 // Types & Mock Data
 import {
@@ -150,7 +151,7 @@ export default function App() {
           name: userData.full_name || metadata.name || session.user.email?.split('@')[0] || 'User',
           email: userData.email || session.user.email || '',
           role: userRole as any,
-          avatarUrl: metadata.avatarUrl || '/images/regenerated_image_1783498425109.jpg',
+          avatarUrl: metadata.avatarUrl || defaultAvatar,
         };
         setCurrentUser(appUser);
         setActivePage('dashboard');
@@ -190,7 +191,7 @@ export default function App() {
           name: userData.full_name || metadata.name || session.user.email?.split('@')[0] || 'User',
           email: userData.email || session.user.email || '',
           role: userRole as any,
-          avatarUrl: metadata.avatarUrl || '/images/regenerated_image_1783498425109.jpg',
+          avatarUrl: metadata.avatarUrl || defaultAvatar,
         };
         setCurrentUser(appUser);
         setActivePage('dashboard');
