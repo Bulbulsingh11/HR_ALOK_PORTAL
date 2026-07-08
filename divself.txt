@@ -1,0 +1,2 @@
+<div className="h-1 bg-indigo-600 rounded-full w-full shadow-2xs" />
+<div style={{ pageBreakBefore: 'always' }} className="pt-2" />

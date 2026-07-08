@@ -1,0 +1,6 @@
+{
+  "name": "ALOK HR Portal",
+  "description": "A modern, responsive SaaS-style HR Operations Management System for internal HR Department use.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

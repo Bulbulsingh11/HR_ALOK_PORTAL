@@ -1,0 +1,2 @@
+src/components/ReportsView.tsx(2742,9): error TS1005: ')' expected.
+src/components/ReportsView.tsx(2742,13): error TS1381: Unexpected token. Did you mean `{'}'}` or `&rbrace;`?
