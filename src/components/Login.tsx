@@ -63,7 +63,7 @@ export default function Login({ onLogin }: LoginProps) {
           name: fullName,
           email: hrUser.email || data.user.email || '',
           role: userRole as any,
-          avatarUrl: '/src/assets/images/regenerated_image_1783498425109.jpg',
+          avatarUrl: '/images/regenerated_image_1783498425109.jpg',
         };
         onLogin(appUser);
       }

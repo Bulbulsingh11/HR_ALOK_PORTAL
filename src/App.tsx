@@ -150,7 +150,7 @@ export default function App() {
           name: userData.full_name || metadata.name || session.user.email?.split('@')[0] || 'User',
           email: userData.email || session.user.email || '',
           role: userRole as any,
-          avatarUrl: metadata.avatarUrl || '/src/assets/images/regenerated_image_1783498425109.jpg',
+          avatarUrl: metadata.avatarUrl || '/images/regenerated_image_1783498425109.jpg',
         };
         setCurrentUser(appUser);
         setActivePage('dashboard');
@@ -190,7 +190,7 @@ export default function App() {
           name: userData.full_name || metadata.name || session.user.email?.split('@')[0] || 'User',
           email: userData.email || session.user.email || '',
           role: userRole as any,
-          avatarUrl: metadata.avatarUrl || '/src/assets/images/regenerated_image_1783498425109.jpg',
+          avatarUrl: metadata.avatarUrl || '/images/regenerated_image_1783498425109.jpg',
         };
         setCurrentUser(appUser);
         setActivePage('dashboard');

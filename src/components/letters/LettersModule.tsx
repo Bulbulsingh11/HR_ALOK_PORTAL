@@ -642,7 +642,49 @@ export default function LettersModule({ currentUser }: LettersModuleProps) {
     setIsGenerating(true);
     
     try {
-      const updatedLetterData = { ...selectedLetter, digitalSignature };
+      let signatureUrl = digitalSignature;
+
+      // If it's a data URL, upload to Supabase Storage
+      if (digitalSignature.startsWith('data:')) {
+        try {
+          const base64Data = digitalSignature.split(',')[1];
+          const byteCharacters = atob(base64Data);
+          const byteArrays = [];
+          for (let offset = 0; offset < byteCharacters.length; offset += 512) {
+            const slice = byteCharacters.slice(offset, offset + 512);
+            const byteNumbers = new Array(slice.length);
+            for (let i = 0; i < slice.length; i++) {
+              byteNumbers[i] = slice.charCodeAt(i);
+            }
+            const byteArray = new Uint8Array(byteNumbers);
+            byteArrays.push(byteArray);
+          }
+          const blob = new Blob(byteArrays, { type: 'image/png' });
+          
+          const fileName = `signature_${Date.now()}_${Math.random().toString(36).substring(7)}.png`;
+          const { error: uploadError } = await supabase.storage
+            .from('letters')
+            .upload(`signatures/${fileName}`, blob, {
+              contentType: 'image/png',
+              upsert: false
+            });
+            
+          if (uploadError) throw uploadError;
+          
+          const { data: urlData } = supabase.storage
+            .from('letters')
+            .getPublicUrl(`signatures/${fileName}`);
+            
+          signatureUrl = urlData.publicUrl;
+        } catch (err) {
+          console.error('Failed to upload signature image:', err);
+          alert('Failed to upload signature. Please try again.');
+          setIsGenerating(false);
+          return;
+        }
+      }
+
+      const updatedLetterData = { ...selectedLetter, digitalSignature: signatureUrl };
       
       const { error } = await supabase.from('generated_letters')
         .update({ 
