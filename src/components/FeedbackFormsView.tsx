@@ -17,9 +17,12 @@ import {
   CheckCircle2,
   XCircle,
   Clock,
-  Trash2
+  Trash2,
+  Copy,
+  Mail
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
+import { sendEmail } from '../lib/emailService';
 
 interface FeedbackForm {
   id: string;
@@ -83,7 +86,7 @@ export default function FeedbackFormsView() {
       const fetchLogs = async () => {
         setIsLoadingLogs(true);
         try {
-          const { data, error } = await supabase.from('employee_triggers').select('*').order('created_at', { ascending: false });
+          const { data, error } = await supabase.from('employee_triggers').select('*').order('created_at', { ascending: false }).limit(100);
           if (!error && data) {
             setTriggerLogs(data);
           }
@@ -101,6 +104,107 @@ export default function FeedbackFormsView() {
   const [trackerEmail, setTrackerEmail] = useState('');
   const [trackerDOJ, setTrackerDOJ] = useState('');
   const [trackedEmployees, setTrackedEmployees] = useState<any[]>([]);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [sendingButtons, setSendingButtons] = useState<Record<string, boolean>>({});
+
+  const handleCopyLink = (text: string, id: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedId(id);
+    setTimeout(() => setCopiedId(null), 2000);
+  };
+
+  const handleSendFeedbackForm = async (emp: any, formType: 'onboarding' | 'experience') => {
+    const buttonKey = `${emp.id}-${formType}`;
+    if (sendingButtons[buttonKey]) return;
+
+    setSendingButtons(prev => ({ ...prev, [buttonKey]: true }));
+
+    try {
+      const subject = formType === 'onboarding' 
+        ? 'Onboarding Feedback Form | ALOK Masterbatches'
+        : 'Employee Experience Feedback | ALOK Masterbatches';
+
+      const formUrl = formType === 'onboarding'
+        ? 'https://docs.google.com/forms/d/e/1FAIpQLSfTWLKTir5kTVfK-aAGG7FIniCnJkKpo5ht_uBfcP-QR1qroQ/viewform'
+        : 'https://docs.google.com/forms/d/e/1FAIpQLScUad1roMCwiIiQD8GgMtcQrcqJJjAO1mP_7fhkOPHu-duitw/viewform';
+
+      const emailContent = formType === 'onboarding'
+        ? `
+        <p>Dear <b>${emp.name}</b>,</p>
+        <p>We hope your first few weeks at <b>ALOK Masterbatches</b> have been engaging and rewarding!</p>
+        <p>To help us continuously improve our onboarding experience, please share your thoughts by completing our brief onboarding feedback form.</p>
+        
+        <div style="background:#f8f9fa; padding:20px; border-radius:12px; margin:20px 0; border:1px solid #e2e8f0; font-family:sans-serif;">
+          <p style="margin:0 0 10px 0;">📋 <b>Form Type:</b> Onboarding Feedback (6 Weeks)</p>
+          <p style="margin:0;">📅 <b>Date of Joining:</b> ${emp.dateOfJoining}</p>
+        </div>
+        
+        <div style="margin:30px 0; text-align:center;">
+          <a href="${formUrl}" 
+             style="display:inline-block; background:#4f46e5; color:white; padding:14px 28px; border-radius:10px; text-decoration:none; font-weight:bold; font-size:15px; box-shadow:0 4px 6px rgba(0,0,0,0.1); font-family:sans-serif;">
+             📝 Complete Onboarding Feedback Form
+          </a>
+        </div>
+        
+        <p>Thank you for your valuable input!</p>
+        <p>Best Regards,<br/><b>HR Team | ALOK Masterbatches</b></p>
+        `
+        : `
+        <p>Dear <b>${emp.name}</b>,</p>
+        <p>Congratulations on completing 6 months at <b>ALOK Masterbatches</b>!</p>
+        <p>Your feedback is vital in helping us shape a great workplace. Please take a few moments to share your experience with us.</p>
+        
+        <div style="background:#f8f9fa; padding:20px; border-radius:12px; margin:20px 0; border:1px solid #e2e8f0; font-family:sans-serif;">
+          <p style="margin:0 0 10px 0;">📋 <b>Form Type:</b> Employee Experience Feedback (6 Months)</p>
+          <p style="margin:0;">📅 <b>Date of Joining:</b> ${emp.dateOfJoining}</p>
+        </div>
+        
+        <div style="margin:30px 0; text-align:center;">
+          <a href="${formUrl}" 
+             style="display:inline-block; background:#10b981; color:white; padding:14px 28px; border-radius:10px; text-decoration:none; font-weight:bold; font-size:15px; box-shadow:0 4px 6px rgba(0,0,0,0.1); font-family:sans-serif;">
+             📝 Complete Experience Feedback Form
+          </a>
+        </div>
+        
+        <p>Thank you for your dedication and feedback!</p>
+        <p>Best Regards,<br/><b>HR Team | ALOK Masterbatches</b></p>
+        `;
+
+      // 1. Send Email using the EmailJS system
+      await sendEmail(emp.email, subject, emailContent);
+
+      // 2. Mark form as sent locally
+      markFormSent(emp.id, formType);
+
+      // 3. Try to update the supabase table "employee_triggers" too if the record exists there by email
+      try {
+        const updateField = formType === 'onboarding' ? 'onboarding_form_sent' : 'experience_form_sent';
+        const updateTimeField = formType === 'onboarding' ? 'onboarding_form_sent_at' : 'experience_form_sent_at';
+        
+        await supabase
+          .from('employee_triggers')
+          .update({
+            [updateField]: true,
+            [updateTimeField]: new Date().toISOString()
+          })
+          .eq('employee_email', emp.email);
+
+        // Refresh logs table
+        const { data: logs } = await supabase.from('employee_triggers').select('*').order('created_at', { ascending: false });
+        if (logs) setTriggerLogs(logs);
+      } catch (dbErr) {
+        console.error('Supabase trigger log update failed:', dbErr);
+      }
+
+      alert(`Success! The feedback form has been sent directly to ${emp.name} (${emp.email}).`);
+
+    } catch (error: any) {
+      console.error('Failed to send feedback form:', error);
+      alert(`Failed to send email: ${error?.message || error || 'Unknown error'}`);
+    } finally {
+      setSendingButtons(prev => ({ ...prev, [buttonKey]: false }));
+    }
+  };
 
   useEffect(() => {
     const existing = JSON.parse(localStorage.getItem('alok_feedback_employees') || '[]');
@@ -142,6 +246,41 @@ export default function FeedbackFormsView() {
     });
     setTrackedEmployees(updated);
     localStorage.setItem('alok_feedback_employees', JSON.stringify(updated));
+  };
+
+  const handleDeleteTriggerLog = async (id: string) => {
+    if (!window.confirm("Are you sure you want to delete this trigger record?")) return;
+    try {
+      const { error } = await supabase
+        .from('employee_triggers')
+        .delete()
+        .eq('id', id);
+
+      if (error) throw error;
+
+      setTriggerLogs(prev => prev.filter(log => log.id !== id));
+    } catch (err: any) {
+      console.error('Failed to delete trigger log:', err);
+      alert('Failed to delete record: ' + (err.message || err));
+    }
+  };
+
+  const handleClearAllTriggerLogs = async () => {
+    if (!window.confirm("Are you sure you want to delete ALL trigger logs? This action cannot be undone and will clear the entire history.")) return;
+    try {
+      const { error } = await supabase
+        .from('employee_triggers')
+        .delete()
+        .neq('id', '00000000-0000-0000-0000-000000000000'); // Deletes all rows safely
+
+      if (error) throw error;
+
+      setTriggerLogs([]);
+      alert('All trigger logs have been cleared successfully.');
+    } catch (err: any) {
+      console.error('Failed to clear trigger logs:', err);
+      alert('Failed to clear all logs: ' + (err.message || err));
+    }
   };
 
   return (
@@ -231,30 +370,72 @@ export default function FeedbackFormsView() {
                     <td className="px-4 py-3 text-center">{w6Badge}</td>
                     <td className="px-4 py-3 text-center">{m6Badge}</td>
                     <td className="px-4 py-3">
-                      <div className="flex items-center justify-center gap-1.5">
-                        <button 
-                          onClick={() => {
-                            window.open(`mailto:${emp.email}?subject=Onboarding Feedback Form | ALOK Masterbatches&body=Please fill out your 6-week onboarding feedback: https://docs.google.com/forms/d/e/1FAIpQLSfTWLKTir5kTVfK-aAGG7FIniCnJkKpo5ht_uBfcP-QR1qroQ/viewform?embedded=true`, '_blank');
-                            markFormSent(emp.id, 'onboarding');
-                          }}
-                          className="px-2 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded text-[10px] font-bold transition-colors cursor-pointer whitespace-nowrap"
-                        >
-                          Send 6W Form
-                        </button>
-                        <button 
-                          onClick={() => {
-                            window.open(`mailto:${emp.email}?subject=Employee Experience Feedback | ALOK Masterbatches&body=Please fill out your 6-month experience feedback: https://docs.google.com/forms/d/e/1FAIpQLScUad1roMCwiIiQD8GgMtcQrcqJJjAO1mP_7fhkOPHu-duitw/viewform?embedded=true`, '_blank');
-                            markFormSent(emp.id, 'experience');
-                          }}
-                          className="px-2 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded text-[10px] font-bold transition-colors cursor-pointer whitespace-nowrap"
-                        >
-                          Send 6M Form
-                        </button>
+                      <div className="flex flex-col gap-2">
+                        {/* 6W Onboarding Form Group */}
+                        <div className="flex items-center gap-1">
+                          <button 
+                            onClick={() => handleSendFeedbackForm(emp, 'onboarding')}
+                            disabled={sendingButtons[`${emp.id}-onboarding`]}
+                            className={`px-2 py-1 rounded text-[10px] font-bold transition-colors cursor-pointer whitespace-nowrap flex items-center gap-1 ${
+                              sendingButtons[`${emp.id}-onboarding`]
+                                ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                                : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-700'
+                            }`}
+                            title="Send Form Directly"
+                          >
+                            <Mail className="h-3 w-3" />
+                            {sendingButtons[`${emp.id}-onboarding`] ? 'Sending...' : 'Send 6W'}
+                          </button>
+                          <button 
+                            onClick={() => {
+                              handleCopyLink('https://docs.google.com/forms/d/e/1FAIpQLSfTWLKTir5kTVfK-aAGG7FIniCnJkKpo5ht_uBfcP-QR1qroQ/viewform', `6w-${emp.id}`);
+                              markFormSent(emp.id, 'onboarding');
+                            }}
+                            className={`p-1 rounded transition-colors cursor-pointer ${
+                              copiedId === `6w-${emp.id}` ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-50 hover:bg-slate-100 text-slate-500 hover:text-slate-700'
+                            }`}
+                            title="Copy Form URL"
+                          >
+                            {copiedId === `6w-${emp.id}` ? <span className="text-[8px] font-bold">Copied!</span> : <Copy className="h-3 w-3" />}
+                          </button>
+                        </div>
+
+                        {/* 6M Experience Form Group */}
+                        <div className="flex items-center gap-1">
+                          <button 
+                            onClick={() => handleSendFeedbackForm(emp, 'experience')}
+                            disabled={sendingButtons[`${emp.id}-experience`]}
+                            className={`px-2 py-1 rounded text-[10px] font-bold transition-colors cursor-pointer whitespace-nowrap flex items-center gap-1 ${
+                              sendingButtons[`${emp.id}-experience`]
+                                ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                                : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-700'
+                            }`}
+                            title="Send Form Directly"
+                          >
+                            <Mail className="h-3 w-3" />
+                            {sendingButtons[`${emp.id}-experience`] ? 'Sending...' : 'Send 6M'}
+                          </button>
+                          <button 
+                            onClick={() => {
+                              handleCopyLink('https://docs.google.com/forms/d/e/1FAIpQLScUad1roMCwiIiQD8GgMtcQrcqJJjAO1mP_7fhkOPHu-duitw/viewform', `6m-${emp.id}`);
+                              markFormSent(emp.id, 'experience');
+                            }}
+                            className={`p-1 rounded transition-colors cursor-pointer ${
+                              copiedId === `6m-${emp.id}` ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-50 hover:bg-slate-100 text-slate-500 hover:text-slate-700'
+                            }`}
+                            title="Copy Form URL"
+                          >
+                            {copiedId === `6m-${emp.id}` ? <span className="text-[8px] font-bold">Copied!</span> : <Copy className="h-3 w-3" />}
+                          </button>
+                        </div>
+
+                        {/* Delete Action */}
                         <button 
                           onClick={() => removeTrackedEmployee(emp.id)}
-                          className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors cursor-pointer"
+                          className="py-1 px-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors cursor-pointer flex items-center justify-center gap-1 text-[10px] font-bold border border-slate-150"
                         >
-                          <Trash2 className="h-4 w-4" />
+                          <Trash2 className="h-3 w-3" />
+                          Delete Employee
                         </button>
                       </div>
                     </td>
@@ -290,12 +471,23 @@ export default function FeedbackFormsView() {
 
       {activeFormId === 'triggers' ? (
         <div className="bg-white border border-slate-200 rounded-2xl shadow-2xs overflow-hidden">
-          <div className="p-5 border-b border-slate-100 bg-slate-50">
-            <h3 className="text-sm font-bold text-slate-800 tracking-tight flex items-center gap-2">
-              <Activity className="h-5 w-5 text-blue-600" />
-              Automated Trigger Logs
-            </h3>
-            <p className="text-xs text-slate-500 mt-1">Real-time status of lifecycle forms dispatched to employees.</p>
+          <div className="p-5 border-b border-slate-100 bg-slate-50 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <div>
+              <h3 className="text-sm font-bold text-slate-800 tracking-tight flex items-center gap-2">
+                <Activity className="h-5 w-5 text-blue-600" />
+                Automated Trigger Logs
+              </h3>
+              <p className="text-xs text-slate-500 mt-1">Real-time status of lifecycle forms dispatched to employees.</p>
+            </div>
+            {triggerLogs.length > 0 && (
+              <button
+                onClick={handleClearAllTriggerLogs}
+                className="self-start sm:self-center px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 hover:text-rose-800 text-xs font-bold rounded-xl transition-colors cursor-pointer flex items-center gap-1.5 border border-rose-200/60"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                Clear All Logs
+              </button>
+            )}
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse">
@@ -318,9 +510,20 @@ export default function FeedbackFormsView() {
                 ) : (
                   triggerLogs.map((log) => (
                     <tr key={log.id} className="hover:bg-slate-50/50 transition-colors text-xs text-slate-700">
-                      <td className="px-5 py-3 font-medium text-slate-900">
-                        {log.employee_name}
-                        <div className="text-[10px] text-slate-400 font-normal">{log.employee_email}</div>
+                      <td className="px-5 py-3 font-medium text-slate-900 relative group">
+                        <div className="flex items-start justify-between gap-2 pr-2">
+                          <div>
+                            {log.employee_name}
+                            <div className="text-[10px] text-slate-400 font-normal">{log.employee_email}</div>
+                          </div>
+                          <button
+                            onClick={() => handleDeleteTriggerLog(log.id)}
+                            className="p-1 text-slate-300 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all md:opacity-0 md:group-hover:opacity-100 focus:opacity-100 opacity-100 cursor-pointer shrink-0"
+                            title={`Delete trigger record for ${log.employee_name}`}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
                       </td>
                       <td className="px-5 py-3 font-mono">{log.date_of_joining}</td>
                       <td className="px-5 py-3">

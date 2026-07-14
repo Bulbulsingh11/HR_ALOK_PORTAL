@@ -32,7 +32,31 @@ export default function DashboardView({
   onPageChange,
 }: DashboardViewProps) {
 
-  const { data: hrData, isHydrating } = useHRData();
+  const { data: hrData, isHydrating, error, retry } = useHRData();
+
+  if (error) {
+    return (
+      <div className="min-h-[400px] flex flex-col items-center justify-center p-8 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-2xl shadow-sm space-y-4">
+        <div className="p-3 bg-rose-50 dark:bg-rose-900/20 rounded-full">
+          <AlertCircle className="h-8 w-8 text-rose-500" />
+        </div>
+        <div className="text-center space-y-1">
+          <h3 className="text-lg font-bold text-slate-900 dark:text-white">Data Hydration Failed</h3>
+          <p className="text-sm text-slate-500 dark:text-slate-400 max-w-xs mx-auto">
+            We encountered an issue restoring your local HR dataset.
+          </p>
+          <p className="text-xs text-rose-600 dark:text-rose-400 font-mono mt-2">{error}</p>
+        </div>
+        <button
+          onClick={retry}
+          className="px-6 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-sm font-bold shadow-md transition-all cursor-pointer flex items-center gap-2"
+        >
+          <LogOut className="h-4 w-4 rotate-180" />
+          Retry Hydration
+        </button>
+      </div>
+    );
+  }
 
   if (isHydrating) {
     return (

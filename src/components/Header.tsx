@@ -7,7 +7,8 @@ import React, { useState, useMemo } from 'react';
 import { Bell, Menu, Search, UserCheck, LogOut, MessageSquare, Calendar, Sun, Moon, Sparkles } from 'lucide-react';
 import { PageId, User } from '../types';
 import { useHRData } from '../lib/hrDataBridge';
-import defaultAvatar from '../assets/images/regenerated_image_1783498425109.jpg';
+import { AVATAR_109_BASE64, AVATAR_121_BASE64 } from '../assets/base64Assets';
+
 
 interface HeaderProps {
   activePage: PageId;
@@ -274,7 +275,7 @@ export default function Header({
         <div className="flex items-center gap-1.5 md:gap-2">
           <div className="h-7 w-7 md:h-8.5 md:w-8.5 rounded-full bg-slate-100 overflow-hidden border border-slate-200 flex-shrink-0">
             <img 
-              src={currentUser?.avatarUrl || defaultAvatar} 
+              src={currentUser?.avatarUrl || (currentUser?.role === 'admin' ? AVATAR_109_BASE64 : AVATAR_121_BASE64)} 
               alt={currentUser?.name} 
               referrerPolicy="no-referrer"
               className="h-full w-full object-cover" 

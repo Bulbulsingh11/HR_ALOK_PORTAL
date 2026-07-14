@@ -18,7 +18,8 @@ import FeedbackFormsView from './components/FeedbackFormsView';
 import ReportsView from './components/ReportsView';
 import PortalGuideView from './components/PortalGuideView';
 import { HRDataProvider } from './lib/hrDataBridge';
-import defaultAvatar from './assets/images/regenerated_image_1783498425109.jpg';
+import { AVATAR_109_BASE64, AVATAR_121_BASE64 } from './assets/base64Assets';
+
 
 // Types & Mock Data
 import {
@@ -34,7 +35,10 @@ export default function App() {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   // Auto trigger checker
+  const hasCheckedTriggers = React.useRef(false);
   const checkAndSendTriggers = async () => {
+    if (hasCheckedTriggers.current) return;
+    hasCheckedTriggers.current = true;
     try {
       const { data: triggers, error } = await supabase.from('employee_triggers').select('*');
       if (error) throw error;
@@ -106,10 +110,10 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (currentUser && isSupabaseConfigured) {
-      checkAndSendTriggers();
+    if (isSupabaseConfigured) {
+      setTimeout(checkAndSendTriggers, 1000);
     }
-  }, [currentUser]);
+  }, []);
 
   // Check and sync Supabase auth session
   useEffect(() => {
@@ -151,11 +155,13 @@ export default function App() {
           name: userData.full_name || metadata.name || session.user.email?.split('@')[0] || 'User',
           email: userData.email || session.user.email || '',
           role: userRole as any,
-          avatarUrl: metadata.avatarUrl || defaultAvatar,
+          avatarUrl: metadata.avatarUrl || (userRole === 'admin' ? AVATAR_109_BASE64 : AVATAR_121_BASE64),
         };
         setCurrentUser(appUser);
-        setActivePage('dashboard');
       }
+      setIsAuthLoading(false);
+    }).catch(err => {
+      console.error(err);
       setIsAuthLoading(false);
     });
 
@@ -191,10 +197,9 @@ export default function App() {
           name: userData.full_name || metadata.name || session.user.email?.split('@')[0] || 'User',
           email: userData.email || session.user.email || '',
           role: userRole as any,
-          avatarUrl: metadata.avatarUrl || defaultAvatar,
+          avatarUrl: metadata.avatarUrl || (userRole === 'admin' ? AVATAR_109_BASE64 : AVATAR_121_BASE64),
         };
         setCurrentUser(appUser);
-        setActivePage('dashboard');
       } else {
         setCurrentUser(null);
       }
@@ -207,7 +212,14 @@ export default function App() {
   }, []);
 
   // Layout navigation state
-  const [activePage, setActivePage] = useState<PageId>('dashboard');
+  const [activePage, setActivePage] = useState<PageId>(() => {
+    return (localStorage.getItem('alok-active-page') as PageId) || 'dashboard';
+  });
+
+  useEffect(() => {
+    localStorage.setItem('alok-active-page', activePage);
+  }, [activePage]);
+
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
 
@@ -340,12 +352,28 @@ export default function App() {
   // Protected Routes Render Controller
   if (isAuthLoading) {
     return (
-      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center font-sans">
-        <div className="flex flex-col items-center gap-3">
-          <div className="h-10 w-10 rounded-xl bg-indigo-600 flex items-center justify-center text-white shadow-lg animate-pulse">
-            <span className="text-lg font-bold font-mono">HR</span>
+      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center font-sans p-6 text-center">
+        <div className="flex flex-col items-center gap-4 max-w-xs">
+          <div className="h-12 w-12 rounded-2xl bg-indigo-600 flex items-center justify-center text-white shadow-lg animate-pulse">
+            <span className="text-xl font-bold font-mono">HR</span>
           </div>
-          <p className="text-xs text-slate-500 font-medium animate-pulse">Verifying secure session...</p>
+          <div className="space-y-1">
+            <p className="text-sm font-bold text-slate-800">Verifying Secure Session</p>
+            <p className="text-xs text-slate-500 leading-relaxed">
+              Checking authentication with Supabase Cloud. This usually takes a moment...
+            </p>
+          </div>
+          
+          {/* Manual safety-catch retry button (replaces automatic loops that cause freezes) */}
+          <button 
+            onClick={() => window.location.reload()}
+            className="mt-4 px-4 py-2 border border-slate-200 hover:border-slate-300 bg-white hover:bg-slate-50 text-slate-600 rounded-xl text-[10px] font-bold shadow-sm transition-all flex items-center gap-2 cursor-pointer"
+          >
+            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+            Taking too long? Reload App
+          </button>
         </div>
       </div>
     );

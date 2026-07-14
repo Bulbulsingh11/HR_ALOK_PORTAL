@@ -10,9 +10,10 @@ import { Candidate, User } from '../types';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas-pro';
 import AlokLogo from './AlokLogo';
+import { ALOK_LOGO_BASE64 } from '../assets/base64Assets';
 import { isSupabaseConfigured, supabase } from '../lib/supabase';
 import { sendEmail } from '../lib/emailService';
-import alokLogo from '../assets/alok-logo.png';
+
 
 interface OfferLetterModalProps {
   candidate: Candidate;
@@ -753,7 +754,7 @@ useEffect(() => {
                         display: 'flex',
                         justifyContent: 'end'
                       }}>
-                        <img src={alokLogo} alt="ALOK Logo" style={{ height: '45px', width: 'auto', objectFit: 'contain', mixBlendMode: 'multiply' }} />
+                        <img src={ALOK_LOGO_BASE64} alt="ALOK Logo" style={{ height: '45px', width: 'auto', objectFit: 'contain', mixBlendMode: 'multiply' }} />
                       </div>
 
                       {/* Content Area */}

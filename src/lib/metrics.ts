@@ -7,31 +7,58 @@ import { HRRecord } from './hrDataBridge';
 import { validateTAT } from './validate';
 import { KNOWN_INVALID_RECRUITERS } from './canonicalize';
 
+export function getNormalizedDateString(d: Date | string | null | undefined): string {
+  if (!d) return '';
+  if (typeof d === 'string') {
+    const isoMatch = d.match(/^(\d{4})[-/](\d{2})[-/](\d{2})/);
+    if (isoMatch) return `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`;
+  }
+  
+  const date = d instanceof Date ? d : new Date(d);
+  if (isNaN(date.getTime())) return '';
+
+  const isUtc = date.getUTCHours() === 0 && date.getUTCMinutes() === 0;
+  
+  const y = isUtc ? date.getUTCFullYear() : date.getFullYear();
+  const m = String((isUtc ? date.getUTCMonth() : date.getMonth()) + 1).padStart(2, '0');
+  const day = String(isUtc ? date.getUTCDate() : date.getDate()).padStart(2, '0');
+  
+  return `${y}-${m}-${day}`;
+}
+
 /**
  * Formula: Total Hires (in period) = count of employees where period_start <= date_of_joining <= period_end.
  */
 export function calcTotalHires(records: HRRecord[], start: Date, end: Date): number {
-  const startMs = start.getTime();
-  const endMs = end.getTime();
-  return records.filter(r => {
+  console.log(`calcTotalHires starting. records.length: ${records.length}`);
+  const missing85790 = records.find(r => r.employee_id === '85790');
+  const missingELM003 = records.find(r => r.employee_id === 'ELM003');
+  console.log(`85790 present? ${!!missing85790}. ELM003 present? ${!!missingELM003}`);
+  
+  const startStr = getNormalizedDateString(start);
+  const endStr = getNormalizedDateString(end);
+  
+  const hires = records.filter(r => {
     if (!r.date_of_joining) return false;
-    const joinMs = new Date(r.date_of_joining).getTime();
-    return joinMs >= startMs && joinMs <= endMs;
-  }).length;
+    const joinStr = getNormalizedDateString(r.date_of_joining);
+    return joinStr >= startStr && joinStr <= endStr;
+  });
+
+  return hires.length;
 }
 
 /**
  * Formula: Headcount at Date = joined <= targetDate && (exit_date is null || exit_date > targetDate)
  */
 export function calcHeadcountAtDate(records: HRRecord[], targetDate: Date): number {
-  const targetMs = targetDate.getTime();
+  const targetStr = getNormalizedDateString(targetDate);
   return records.filter(r => {
     if (!r.date_of_joining) return false;
-    const joinMs = new Date(r.date_of_joining).getTime();
-    if (joinMs > targetMs) return false;
+    const joinStr = getNormalizedDateString(r.date_of_joining);
+    if (joinStr > targetStr) return false;
     if (r.exit_date) {
-      const exitMs = new Date(r.exit_date).getTime();
-      return exitMs > targetMs;
+      const exitStr = getNormalizedDateString(r.exit_date);
+      return exitStr > targetStr;
     }
     return true;
   }).length;
@@ -39,14 +66,14 @@ export function calcHeadcountAtDate(records: HRRecord[], targetDate: Date): numb
 
 export function calcHeadcountAtStart(records: HRRecord[], start: Date): number {
   // Headcount at start = joined < start && (exit_date is null || exit_date >= start)
-  const startMs = start.getTime();
+  const startStr = getNormalizedDateString(start);
   return records.filter(r => {
     if (!r.date_of_joining) return false;
-    const joinMs = new Date(r.date_of_joining).getTime();
-    if (joinMs >= startMs) return false;
+    const joinStr = getNormalizedDateString(r.date_of_joining);
+    if (joinStr >= startStr) return false;
     if (r.exit_date) {
-      const exitMs = new Date(r.exit_date).getTime();
-      return exitMs >= startMs;
+      const exitStr = getNormalizedDateString(r.exit_date);
+      return exitStr >= startStr;
     }
     return true;
   }).length;
@@ -54,17 +81,38 @@ export function calcHeadcountAtStart(records: HRRecord[], start: Date): number {
 
 export function calcHeadcountAtEnd(records: HRRecord[], end: Date): number {
   // Headcount at end = joined <= end && (exit_date is null || exit_date > end)
-  const endMs = end.getTime();
-  return records.filter(r => {
-    if (!r.date_of_joining) return false;
-    const joinMs = new Date(r.date_of_joining).getTime();
-    if (joinMs > endMs) return false;
+  const endStr = getNormalizedDateString(end);
+  
+  let totalRecs = records.length;
+  let missingJoin = 0;
+  let joinAfterEnd = 0;
+  let exitBeforeOrAtEnd = 0;
+  
+  const filtered = records.filter(r => {
+    if (!r.date_of_joining) {
+      missingJoin++;
+      return false;
+    }
+    const joinStr = getNormalizedDateString(r.date_of_joining);
+    if (joinStr > endStr) {
+      joinAfterEnd++;
+      return false;
+    }
     if (r.exit_date) {
-      const exitMs = new Date(r.exit_date).getTime();
-      return exitMs > endMs;
+      const exitStr = getNormalizedDateString(r.exit_date);
+      if (exitStr <= endStr) {
+        exitBeforeOrAtEnd++;
+        return false;
+      }
     }
     return true;
-  }).length;
+  });
+
+  console.log(`--- DEBUG HEADCOUNT AT END (end: ${endStr}) ---`);
+  console.log(`Total records: ${totalRecs}, Missing Join: ${missingJoin}, Join after end: ${joinAfterEnd}, Exit before/at end: ${exitBeforeOrAtEnd}, Result: ${filtered.length}`);
+  console.log("--------------------------------------------");
+
+  return filtered.length;
 }
 
 export function calcAverageHeadcount(records: HRRecord[], start: Date, end: Date): number {
@@ -78,42 +126,31 @@ export function calcAverageHeadcount(records: HRRecord[], start: Date, end: Date
  * (start <= exit_date <= end)
  */
 export function calcAttritionCount(records: HRRecord[], start: Date, end: Date): number {
-  const startMs = start.getTime();
-  const endMs = end.getTime();
+  const startStr = getNormalizedDateString(start);
+  const endStr = getNormalizedDateString(end);
   return records.filter(r => {
     if (!r.exit_date) return false;
-    const exitMs = new Date(r.exit_date).getTime();
-    return exitMs >= startMs && exitMs <= endMs;
+    const exitStr = getNormalizedDateString(r.exit_date);
+    return exitStr >= startStr && exitStr <= endStr;
   }).length;
 }
 
 /**
- * Formula: Attrition Rate = (Exits / (Active Headcount at End + Exits)) * 100
+ * Formula: Annualized Attrition Rate = (Exits / Avg Headcount) * (365 / Days in Period) * 100
  */
 export function calcAttritionRate(records: HRRecord[], start: Date, end: Date) {
   const exits = calcAttritionCount(records, start, end);
-  const active = calcHeadcountAtEnd(records, end);
-  const total = active + exits;
+  const activeEnd = calcHeadcountAtEnd(records, end);
   
-  if (total === 0) {
-    return {
-      exits,
-      exitsCount: exits,
-      avgHeadcount: 0,
-      totalHeadcount: 0,
-      rate: "0.0",
-      hasInsufficientData: true
-    };
-  }
+  const rate = activeEnd > 0 ? (exits / activeEnd) * 100 : 0;
   
-  const rate = ((exits / total) * 100).toFixed(1);
   return {
     exits,
     exitsCount: exits,
-    avgHeadcount: total,
-    totalHeadcount: total,
-    rate,
-    hasInsufficientData: false
+    avgHeadcount: activeEnd,
+    totalHeadcount: activeEnd,
+    rate: rate.toFixed(1),
+    hasInsufficientData: activeEnd === 0
   };
 }
 
@@ -438,33 +475,39 @@ export function calcNewVsReplacementCost(
   let costNew = 0;
   let countRep = 0;
   let costRep = 0;
+  let countUnspecified = 0;
+  let costUnspecified = 0;
 
   hires.forEach(r => {
     let type = (r.hire_type || '').toLowerCase().trim();
     if (type !== 'new' && type !== 'replacement') {
-      const repFor = (r.replacement_for || '').trim();
-      const isRep = repFor !== '' && 
-                    repFor.toUpperCase() !== 'N/A' && 
-                    repFor.toUpperCase() !== 'NA' && 
-                    repFor.toUpperCase() !== '-' && 
-                    repFor.toUpperCase() !== 'NONE' && 
-                    repFor.toUpperCase() !== 'NIL';
-      type = isRep ? 'replacement' : 'new';
+      const repFor = (r.replacement_for || '').trim().toLowerCase();
+      if (repFor && repFor !== 'n/a' && repFor !== 'not applicable' && repFor !== '-' && repFor !== 'none') {
+        type = 'replacement';
+      } else if (!r.hire_type) {
+        type = 'unspecified';
+      } else {
+        type = 'new';
+      }
     }
-
     const totalCost = r.cost_per_hire_inr || 0;
+    
     if (type === 'new') {
       countNew++;
       costNew += totalCost;
-    } else {
+    } else if (type === 'replacement') {
       countRep++;
       costRep += totalCost;
+    } else {
+      countUnspecified++;
+      costUnspecified += totalCost;
     }
   });
 
   return [
     { name: 'New Hire', count: countNew, cost: costNew },
-    { name: 'Replacement', count: countRep, cost: costRep }
+    { name: 'Replacement', count: countRep, cost: costRep },
+    { name: 'Unspecified', count: countUnspecified, cost: costUnspecified }
   ];
 }
 
@@ -632,10 +675,9 @@ export function calcVoluntaryVsInvoluntary(records: HRRecord[]) {
   let involuntary = 0;
   records.forEach(r => {
     const type = (r.attrition_type || '').toLowerCase().trim();
-    const reason = (r.exit_reason || '').toLowerCase().trim();
-    if (type === 'voluntary' || reason === 'voluntary') {
+    if (type === 'voluntary') {
       voluntary++;
-    } else if (type === 'involuntary' || reason === 'involuntary') {
+    } else if (type === 'involuntary') {
       involuntary++;
     }
   });
@@ -668,16 +710,10 @@ export function calcVoluntaryInvoluntaryAttrition(
       const d = new Date(r.exit_date);
       if (d.getFullYear() === year && d.getMonth() === month && d >= start && d <= end) {
         const type = (r.attrition_type || '').toLowerCase().trim();
-        const reason = (r.exit_reason || '').toLowerCase().trim();
 
-        // Exact comparisons only as mandated by scope rules to prevent Voluntary/Involuntary bug
         if (type === 'voluntary') {
           vol++;
         } else if (type === 'involuntary') {
-          invol++;
-        } else if (reason === 'voluntary') {
-          vol++;
-        } else if (reason === 'involuntary') {
           invol++;
         } else {
           unspecified++;

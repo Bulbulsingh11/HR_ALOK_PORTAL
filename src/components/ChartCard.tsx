@@ -85,7 +85,7 @@ export default function ChartCard({
   return (
     <div
       ref={cardRef}
-      className={`border border-slate-200 rounded-2xl p-5 bg-white text-left shadow-2xs relative flex flex-col justify-between ${
+      className={`border border-slate-200 rounded-2xl p-5 bg-white text-left shadow-2xs relative flex flex-col justify-between min-w-0 min-h-0 overflow-hidden ${
         fullWidth ? 'col-span-1 lg:col-span-2' : ''
       }`}
     >

@@ -4,7 +4,7 @@
  */
 
 import React from 'react';
-import alokLogo from '../assets/alok-logo.png';
+import { ALOK_LOGO_BASE64 } from '../assets/base64Assets';
 
 interface AlokLogoProps {
   className?: string;
@@ -34,7 +34,7 @@ export default function AlokLogo({
   return (
     <div className={`flex items-center ${className} select-none`}>
       <img 
-        src={alokLogo} 
+        src={ALOK_LOGO_BASE64} 
         alt="ALOK Logo" 
         className={`${heights} w-auto object-contain`} 
       />

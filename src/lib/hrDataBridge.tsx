@@ -16,6 +16,7 @@ export interface HRRecord {
   marital_status?: string;
   designation?: string;
   plant_location?: string;
+  pf_location?: string;
   recruitment_source?: string;
   recruiter_name?: string;
   tat_days?: number;
@@ -37,6 +38,8 @@ interface HRDataContextValue {
   data: HRRecord[];
   setData: (records: HRRecord[]) => void;
   isHydrating: boolean;
+  error: string | null;
+  retry: () => void;
 }
 
 const HRDataContext = createContext<HRDataContextValue | undefined>(undefined);
@@ -44,6 +47,7 @@ const HRDataContext = createContext<HRDataContextValue | undefined>(undefined);
 export const HRDataProvider = ({ children }: { children: ReactNode }) => {
   const [data, setData] = useState<HRRecord[]>([]);
   const [isHydrating, setIsHydrating] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   // One‑time cleanup of legacy raw data in localStorage (pre‑fix for quota bug)
   useEffect(() => {
@@ -54,28 +58,32 @@ export const HRDataProvider = ({ children }: { children: ReactNode }) => {
     }
   }, []);
 
+  const hydrate = async () => {
+    setIsHydrating(true);
+    setError(null);
+    try {
+      const records = await loadImportedData();
+      if (records && Array.isArray(records)) {
+        const formatted = records.map((r: any) => ({
+          ...r,
+          date_of_joining: r.date_of_joining ? new Date(r.date_of_joining) : null,
+          exit_date: r.exit_date ? new Date(r.exit_date) : null,
+          offer_date: r.offer_date ? new Date(r.offer_date) : null,
+          job_posted_date: r.job_posted_date ? new Date(r.job_posted_date) : null,
+          interview_date: r.interview_date ? new Date(r.interview_date) : null,
+        }));
+        setData(formatted);
+      }
+    } catch (err: any) {
+      console.error('Error hydrating HR data from IndexedDB:', err);
+      setError(err?.message || 'Failed to load data from IndexedDB');
+    } finally {
+      setIsHydrating(false);
+    }
+  };
+
   // Hydrate from IndexedDB on mount
   useEffect(() => {
-    async function hydrate() {
-      try {
-        const records = await loadImportedData();
-        if (records && Array.isArray(records)) {
-          const formatted = records.map((r: any) => ({
-            ...r,
-            date_of_joining: r.date_of_joining ? new Date(r.date_of_joining) : null,
-            exit_date: r.exit_date ? new Date(r.exit_date) : null,
-            offer_date: r.offer_date ? new Date(r.offer_date) : null,
-            job_posted_date: r.job_posted_date ? new Date(r.job_posted_date) : null,
-            interview_date: r.interview_date ? new Date(r.interview_date) : null,
-          }));
-          setData(formatted);
-        }
-      } catch (err) {
-        console.error('Error hydrating HR data from IndexedDB:', err);
-      } finally {
-        setIsHydrating(false);
-      }
-    }
     hydrate();
   }, []);
 
@@ -93,7 +101,7 @@ export const HRDataProvider = ({ children }: { children: ReactNode }) => {
   };
 
   return (
-    <HRDataContext.Provider value={{ data, setData: setAndPersistData, isHydrating }}>
+    <HRDataContext.Provider value={{ data, setData: setAndPersistData, isHydrating, error, retry: hydrate }}>
       {children}
     </HRDataContext.Provider>
   );

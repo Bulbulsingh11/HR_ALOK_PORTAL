@@ -9,7 +9,8 @@ import { Lock, Mail, ShieldAlert, User as UserIcon, LogIn, ArrowRight, CheckCirc
 import { User as AppUser } from '../types';
 import { supabase } from '../lib/supabase';
 import AlokLogo from './AlokLogo';
-import defaultAvatar from '../assets/images/regenerated_image_1783498425109.jpg';
+import { AVATAR_109_BASE64, AVATAR_121_BASE64 } from '../assets/base64Assets';
+
 
 interface LoginProps {
   onLogin: (user: AppUser) => void;
@@ -64,7 +65,7 @@ export default function Login({ onLogin }: LoginProps) {
           name: fullName,
           email: hrUser.email || data.user.email || '',
           role: userRole as any,
-          avatarUrl: defaultAvatar,
+          avatarUrl: userRole === 'admin' ? AVATAR_109_BASE64 : AVATAR_121_BASE64,
         };
         onLogin(appUser);
       }

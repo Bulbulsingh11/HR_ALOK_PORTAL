@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useHRData } from '../lib/hrDataBridge';
 import { readDraft, useDraftAutosave } from '../lib/useDraftAutosave';
 import { motion, AnimatePresence } from 'motion/react';
@@ -42,6 +42,7 @@ import {
 } from 'lucide-react';
 
 import { User } from '../types';
+import { canonicalizeDepartment, canonicalizeLocation } from '../lib/canonicalize';
 import ChartCard from './ChartCard';
 import {
   ChartConfig,
@@ -212,7 +213,8 @@ import {
   calculateHeadcountCostByLocation,
   calculateTopUpCostBreakdown,
   calculateVoluntaryInvoluntaryAttrition,
-  calculateTenureDistribution, calculateCategoryDistribution, calculateExperienceDistribution, calculateYearlyCtcVsHeadcount
+  calculateTenureDistribution, calculateCategoryDistribution, calculateExperienceDistribution, calculateYearlyCtcVsHeadcount,
+  validateDatasetOnce
 } from '../lib/hrMetrics';
 import { calcRecruiterPerformance } from '../lib/metrics';
 import { validateTAT } from '../lib/validate';
@@ -280,6 +282,15 @@ const formatTenureLongYMD = (avgDays: number): string => {
   return `${parts[0]}, ${parts[1]}, and ${parts[2]}`;
 };
 
+const formatDatePretty = (val: any) => {
+  if (!val) return '';
+  const d = new Date(val);
+  if (isNaN(d.getTime())) return String(val);
+  const day = String(d.getDate()).padStart(2, '0');
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  return `${day} ${months[d.getMonth()]} ${d.getFullYear()}`;
+};
+
 interface ReportsViewProps {
   currentUser?: User | null;
 }
@@ -291,7 +302,7 @@ export default function ReportsView({ currentUser }: ReportsViewProps) {
   const [isManageChartsOpen, setIsManageChartsOpen] = useState<boolean>(false);
   
   // Must be called at top level — NOT inside callbacks (Rules of Hooks)
-  const { data: hrReportDataCtx, setData: setHRContextData, isHydrating } = useHRData();
+  const { data: hrReportDataCtx, setData: setHRContextData, isHydrating, error: hydrationError, retry: retryHydration } = useHRData();
 
   // Hydrate local state from context when it finishes loading from IndexedDB
   useEffect(() => {
@@ -306,9 +317,7 @@ export default function ReportsView({ currentUser }: ReportsViewProps) {
   const REPORT_FILTERS_KEY = 'draft_report_filters';
   type ReportFilterDraft = { fromDate: string; toDate: string; selectedBranch: string };
 
-  const [selectedBranch, setSelectedBranch] = useState<string>(() => {
-    return readDraft<ReportFilterDraft>(REPORT_FILTERS_KEY)?.selectedBranch ?? 'All Branches';
-  });
+  const hasAutoRanged = useRef(false);
 
   // Default dates: 3 months before today and today
   const [fromDate, setFromDate] = useState<string>(() => {
@@ -322,6 +331,26 @@ export default function ReportsView({ currentUser }: ReportsViewProps) {
   const [toDate, setToDate] = useState<string>(() => {
     return readDraft<ReportFilterDraft>(REPORT_FILTERS_KEY)?.toDate ?? new Date().toISOString().split('T')[0];
   });
+
+  const [selectedBranch, setSelectedBranch] = useState<string>(() => {
+    return readDraft<ReportFilterDraft>(REPORT_FILTERS_KEY)?.selectedBranch ?? 'All Branches';
+  });
+
+  useEffect(() => {
+    if (hrReportData.length > 0 && !hasAutoRanged.current) {
+      const saved = readDraft<ReportFilterDraft>(REPORT_FILTERS_KEY);
+      if (!saved) {
+        const dates = hrReportData.map(r => r.date_of_joining).filter(Boolean) as Date[];
+        if (dates.length > 0) {
+          const minDate = new Date(Math.min(...dates.map(d => d.getTime())));
+          const maxDate = new Date(Math.max(...dates.map(d => d.getTime())));
+          setFromDate(minDate.toISOString().split('T')[0]);
+          setToDate(maxDate.toISOString().split('T')[0]);
+        }
+      }
+      hasAutoRanged.current = true;
+    }
+  }, [hrReportData]);
 
   // Autosave report filters — only the three user-typed filter values, not the dataset
   const { clearDraft: clearFilterDraft } = useDraftAutosave<ReportFilterDraft>(
@@ -347,19 +376,55 @@ export default function ReportsView({ currentUser }: ReportsViewProps) {
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [confirmClearAll, setConfirmClearAll] = useState<boolean>(false);
 
-  const parseDate = (val: any): Date | null => {
-    if (!val) return null;
+  const historyWithStats = useMemo(() => {
+    return historyList.map(item => {
+      const { cleaned: snapshotCleaned } = getCleanedRecords(hrReportData, item.branchFilter);
+      const stats = calculateAttritionRate(snapshotCleaned, new Date(item.fromDate), new Date(item.toDate));
+      return {
+        ...item,
+        snapshotAttrition: {
+          exitsCount: stats.exitsCount,
+          attritionRate: stats.rate
+        }
+      };
+    });
+  }, [historyList, hrReportData]);
+
+  const parseDate = (val: any, fieldName: string = 'date'): Date | null => {
+    if (val === null || val === undefined) return null;
     if (val instanceof Date) {
-      return isNaN(val.getTime()) ? null : val;
+      if (isNaN(val.getTime())) {
+        console.warn(`[Data Quality] ${fieldName}: Invalid Date object provided:`, val);
+        return null;
+      }
+      return val;
     }
     const str = String(val).trim();
-    if (str === '' || str.toLowerCase() === 'null') return null;
+    if (str === '' || str.toLowerCase() === 'null' || str === '0' || str === '-' || str.toLowerCase() === 'na' || str.toLowerCase() === 'n/a') return null;
 
     // Check if it's an Excel serial number
     if (/^\d+(\.\d+)?$/.test(str)) {
       const num = parseFloat(str);
+      // Valid Excel dates in our modern context should be > 30000 (which is 1982) and < 100000 (which is 2173)
+      // Rejecting 0 or small numbers that turn into 1900 dates
+      if (num < 10000) {
+        console.warn(`[Data Quality] ${fieldName}: Ignored suspiciously small Excel serial number:`, num);
+        return null;
+      }
       // Excel base date is Dec 30, 1899 (due to leap year bug in 1900)
       const date = new Date(Math.round((num - 25569) * 86400 * 1000));
+      if (!isNaN(date.getTime())) {
+        return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+      }
+    }
+
+    // Try parsing standard YYYY-MM-DD or YYYY/MM/DD
+    const ymdMatch = str.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})$/);
+    if (ymdMatch) {
+      const year = parseInt(ymdMatch[1], 10);
+      const month = parseInt(ymdMatch[2], 10) - 1; // 0-indexed
+      const day = parseInt(ymdMatch[3], 10);
+      const date = new Date(Date.UTC(year, month, day));
       if (!isNaN(date.getTime())) return date;
     }
 
@@ -369,12 +434,42 @@ export default function ReportsView({ currentUser }: ReportsViewProps) {
       const day = parseInt(dmyMatch[1], 10);
       const month = parseInt(dmyMatch[2], 10) - 1; // 0-indexed
       const year = parseInt(dmyMatch[3], 10);
-      const date = new Date(year, month, day);
+      const date = new Date(Date.UTC(year, month, day));
       if (!isNaN(date.getTime())) return date;
     }
 
+    // Try parsing standard DD-MMM-YY or DD-MMM-YYYY (e.g., "13-Jul-26" or "13-Jul-2026")
+    const dmmmMatch = str.match(/^(\d{1,2})[\/\-]([A-Za-z]{3})[\/\-](\d{2,4})$/);
+    if (dmmmMatch) {
+      const day = parseInt(dmmmMatch[1], 10);
+      const yearStr = dmmmMatch[3];
+      let year = parseInt(yearStr, 10);
+      if (yearStr.length === 2) {
+        year += year < 50 ? 2000 : 1900;
+      }
+      const monthsMap: Record<string, number> = {
+        jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
+        jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11
+      };
+      const monthStr = dmmmMatch[2].toLowerCase();
+      const month = monthsMap[monthStr];
+      if (month !== undefined) {
+        const date = new Date(Date.UTC(year, month, day));
+        if (!isNaN(date.getTime())) return date;
+      }
+    }
+
     const d = new Date(str);
-    return isNaN(d.getTime()) ? null : d;
+    if (!isNaN(d.getTime())) {
+      if (str.includes('T') || str.includes('Z')) {
+        return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+      } else {
+        return new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+      }
+    }
+    
+    console.warn(`[Data Quality] ${fieldName}: Failed to parse date string: "${str}"`);
+    return null;
   };
 
   const parseNumber = (val: any): number => {
@@ -421,7 +516,8 @@ export default function ReportsView({ currentUser }: ReportsViewProps) {
       marital_status: ['marital_status', 'marital status', 'maritalstatus', 'marriage_status'],
       department: ['department', 'dept'],
       designation: ['designation', 'role', 'title', 'job_title'],
-      plant_location: ['plant_location', 'plant location', 'plantlocation', 'work location', 'work_location', 'pf location', 'pf_location', 'location', 'plant'],
+      plant_location: ['plant_location', 'plant location', 'plantlocation', 'work location', 'work_location', 'location', 'plant'],
+      pf_location: ['pf location', 'pf_location', 'pf_loc'],
       recruitment_source: ['recruitment_source', 'recruitment source', 'recruitmentsource', 'source of hiring', 'source_of_hiring', 'hiring_source', 'source'],
       recruiter_name: ['recruiter_name', 'recruiter name', 'recruitername', 'hr recruiter', 'hr_recruiter', 'recruiter'],
       job_posted_date: ['job_posted_date', 'job posted date', 'jobposteddate', 'mrf date', 'mrf_date', 'posting_date'],
@@ -438,11 +534,11 @@ export default function ReportsView({ currentUser }: ReportsViewProps) {
       category: ['category', 'employee category', 'emp category', 'grade'],
       total_experience_years: ['total_experience', 'total experience', 'experience', 'total exp', 'exp'],
       survey_status: ['survey_status', 'survey status', 'engagement survey', 'exit survey'],
-      hire_type: ['hire_type', 'hire type', 'hiretype', 'hiring type', 'hiring_type'],
+      hire_type: ['hire_type', 'hire type', 'hiretype', 'hiring type', 'hiring_type', 'new/ replacement', 'new / replacement', 'new/replacement'],
       replacement_for: ['replacement_for', 'replacement for', 'replacementfor', 'replacement_of', 'replacement of'],
       base_cost_per_hire: ['base_cost_per_hire', 'base cost per hire', 'basecostperhire', 'base_cost', 'base cost'],
-      top_up_cost: ['top_up_cost', 'top up cost', 'topupcost', 'top_up', 'top up', 'top-up'],
-      attrition_type: ['attrition_type', 'attrition type', 'attritiontype', 'exit type', 'exit_type', 'separation type', 'separation_type']
+      top_up_cost: ['top_up_cost', 'top up cost', 'topupcost', 'top_up', 'top up', 'top-up', 'agency_fee', 'agency fee', 'agency cost', 'agency_cost', 'consultant fee', 'consultant_fee'],
+      attrition_type: ['attrition_type', 'attrition type', 'attritiontype', 'exit type', 'exit_type', 'separation type', 'separation_type', 'exit - voluntary / involuntary / retirement', 'exit-voluntary/involuntary/retirement', 'exit - voluntary/involuntary/retirement']
     };
 
     const processRawData = (rows: any[][]) => {
@@ -509,18 +605,20 @@ export default function ReportsView({ currentUser }: ReportsViewProps) {
           return rawColName ? rowObj[rawColName] : undefined;
         };
 
-        let plantLoc = String(getValue('plant_location') || '').trim() || 'HQ';
-        const locUpper = plantLoc.toUpperCase();
-        if (locUpper.includes('DELHI')) plantLoc = 'Delhi';
-        else if (locUpper.includes('BHIWADI')) plantLoc = 'Bhiwadi';
-        else if (locUpper.includes('RANIPET')) plantLoc = 'Ranipet';
-        else if (locUpper.includes('HQ') || locUpper.includes('HEAD OFFICE')) plantLoc = 'HQ';
+        let workLocVal = String(getValue('plant_location') || '').trim();
+        let pfLocVal = String(getValue('pf_location') || '').trim();
         
-        let deptVal = String(getValue('department') || '').trim();
-        const deptUpper = deptVal.toUpperCase();
-        if (deptUpper.includes('LAB') || deptUpper.includes('QC') || deptUpper.includes('ATIC') || deptUpper.includes('NPD')) deptVal = 'Lab / QC / NPD';
-        else if (deptUpper.includes('ADMIN')) deptVal = 'Administration';
-        else if (deptUpper.includes('TECH')) deptVal = 'Technical Services';
+        let rawLoc = workLocVal;
+        if (!rawLoc || rawLoc.toUpperCase() === 'ATTD') {
+          rawLoc = pfLocVal;
+        }
+        if (!rawLoc) {
+          rawLoc = 'HQ';
+        }
+
+        let plantLoc = canonicalizeLocation(rawLoc);
+        
+        let deptVal = canonicalizeDepartment(getValue('department'));
         const baseCostVal = getValue('base_cost_per_hire');
         const costPerHireVal = getValue('cost_per_hire_inr');
         const topUpVal = getValue('top_up_cost');
@@ -529,13 +627,13 @@ export default function ReportsView({ currentUser }: ReportsViewProps) {
         const topUp = parseNumber(topUpVal);
         const totalCost = baseCost + topUp;
 
-        const doj = parseDate(getValue('date_of_joining'));
-        let exitDate = parseDate(getValue('exit_date'));
+        const doj = parseDate(getValue('date_of_joining'), 'date_of_joining');
+        let exitDate = parseDate(getValue('exit_date'), 'exit_date');
         
         // Data Quality: Fix corrupted Total M_CTC entries (where exit date spilled into CTC column)
         const ctcRawValue = String(getValue('monthly_ctc_inr') || '');
         if (!exitDate && ctcRawValue && (/^\d{1,2}-[A-Za-z]{3}-\d{2,4}$/.test(ctcRawValue) || /^\d{4}-\d{2}-\d{2}$/.test(ctcRawValue) || /jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec/i.test(ctcRawValue))) {
-          const parsedFromCtc = parseDate(ctcRawValue);
+          const parsedFromCtc = parseDate(ctcRawValue, 'exit_date_from_ctc');
           if (parsedFromCtc) {
             exitDate = parsedFromCtc;
           }
@@ -555,11 +653,30 @@ export default function ReportsView({ currentUser }: ReportsViewProps) {
 
         let hireType = String(getValue('hire_type') || '').trim().toLowerCase();
         if (hireType !== 'new' && hireType !== 'replacement') {
-          hireType = String(getValue('replacement_for') || '').trim() ? 'replacement' : 'new';
+          const repFor = String(getValue('replacement_for') || '').trim();
+          const isRepForValid = repFor && !/^(n\/a|not applicable|none|-)$/i.test(repFor);
+          if (isRepForValid) {
+            hireType = 'replacement';
+          } else {
+            hireType = 'new';
+          }
         }
         
         let attritionType = String(getValue('attrition_type') || '').trim().toLowerCase();
-        if (attritionType !== 'voluntary' && attritionType !== 'involuntary') {
+        const exitReason = String(getValue('exit_reason') || '').trim().toLowerCase();
+        if (!attritionType && exitReason) {
+          if (exitReason.includes('involuntary')) {
+            attritionType = 'involuntary';
+          } else if (exitReason.includes('voluntary')) {
+            attritionType = 'voluntary';
+          }
+        }
+        
+        if (attritionType.includes('involuntary')) {
+          attritionType = 'involuntary';
+        } else if (attritionType.includes('voluntary') || attritionType.includes('retirement')) {
+          attritionType = 'voluntary';
+        } else {
           attritionType = exitDate ? 'voluntary' : '';
         }
 
@@ -571,11 +688,12 @@ export default function ReportsView({ currentUser }: ReportsViewProps) {
           department: deptVal,
           designation: String(getValue('designation') || '').trim(),
           plant_location: plantLoc,
+          pf_location: String(getValue('pf_location') || '').trim(),
           recruitment_source: String(getValue('recruitment_source') || '').trim(),
           recruiter_name: String(getValue('recruiter_name') || '').trim(),
-          job_posted_date: parseDate(getValue('job_posted_date')),
-          interview_date: parseDate(getValue('interview_date')),
-          offer_date: parseDate(getValue('offer_date')),
+          job_posted_date: parseDate(getValue('job_posted_date'), 'job_posted_date'),
+          interview_date: parseDate(getValue('interview_date'), 'interview_date'),
+          offer_date: parseDate(getValue('offer_date'), 'offer_date'),
           date_of_joining: doj,
           tat_days: parseNumber(getValue('tat_days')),
           cost_per_hire_inr: totalCost || parseNumber(costPerHireVal),
@@ -667,6 +785,16 @@ export default function ReportsView({ currentUser }: ReportsViewProps) {
     localStorage.setItem('alok_hr_import_date', new Date().toISOString());
     localStorage.setItem('alok_hr_import_count', String(records.length));
 
+    if (records.length > 0) {
+      const dates = records.map(r => r.date_of_joining).filter(Boolean) as Date[];
+      if (dates.length > 0) {
+        const minDate = new Date(Math.min(...dates.map(d => d.getTime())));
+        const maxDate = new Date(Math.max(...dates.map(d => d.getTime())));
+        setFromDate(minDate.toISOString().split('T')[0]);
+        setToDate(maxDate.toISOString().split('T')[0]);
+      }
+    }
+
     setSuccessMessage(`${totalRows} records imported successfully after validating column mappings!`);
     setErrorMessage(null);
     setMappingPreview(null);
@@ -678,28 +806,18 @@ export default function ReportsView({ currentUser }: ReportsViewProps) {
   const loadBuiltInDemoData = () => {
     const mock = generateMockDataList();
     const parsed = mock.map((row: any) => {
-      let plantLoc = String(row.plant_location || '').trim() || 'HQ';
-      const locUpper = plantLoc.toUpperCase();
-      if (locUpper.includes('DELHI')) plantLoc = 'Delhi';
-      else if (locUpper.includes('BHIWADI')) plantLoc = 'Bhiwadi';
-      else if (locUpper.includes('RANIPET')) plantLoc = 'Ranipet';
-      else if (locUpper.includes('HQ') || locUpper.includes('HEAD OFFICE')) plantLoc = 'HQ';
-      
-      let deptVal = String(row.department || '').trim();
-      const deptUpper = deptVal.toUpperCase();
-      if (deptUpper.includes('LAB') || deptUpper.includes('QC') || deptUpper.includes('ATIC') || deptUpper.includes('NPD')) deptVal = 'Lab / QC / NPD';
-      else if (deptUpper.includes('ADMIN')) deptVal = 'Administration';
-      else if (deptUpper.includes('TECH')) deptVal = 'Technical Services';
+      const plantLoc = canonicalizeLocation(row.plant_location);
+      const deptVal = canonicalizeDepartment(row.department);
 
       return {
       ...row,
       plant_location: plantLoc,
       department: deptVal,
-      job_posted_date: parseDate(row.job_posted_date),
-      interview_date: parseDate(row.interview_date),
-      offer_date: parseDate(row.offer_date),
-      date_of_joining: parseDate(row.date_of_joining),
-      exit_date: parseDate(row.exit_date)
+      job_posted_date: parseDate(row.job_posted_date, 'job_posted_date'),
+      interview_date: parseDate(row.interview_date, 'interview_date'),
+      offer_date: parseDate(row.offer_date, 'offer_date'),
+      date_of_joining: parseDate(row.date_of_joining, 'date_of_joining'),
+      exit_date: parseDate(row.exit_date, 'exit_date')
     };
     });
     
@@ -708,6 +826,17 @@ export default function ReportsView({ currentUser }: ReportsViewProps) {
     // Persist only lightweight import metadata — NOT the full dataset (quota-safe)
     localStorage.setItem('alok_hr_import_date', new Date().toISOString());
     localStorage.setItem('alok_hr_import_count', String(parsed.length));
+
+    if (parsed.length > 0) {
+      const dates = parsed.map(r => r.date_of_joining).filter(Boolean) as Date[];
+      if (dates.length > 0) {
+        const minDate = new Date(Math.min(...dates.map(d => d.getTime())));
+        const maxDate = new Date(Math.max(...dates.map(d => d.getTime())));
+        setFromDate(minDate.toISOString().split('T')[0]);
+        setToDate(maxDate.toISOString().split('T')[0]);
+      }
+    }
+
     setSuccessMessage(`${parsed.length} records populated successfully from Alok demo database!`);
     setErrorMessage(null);
     setMappingPreview(null);
@@ -751,7 +880,7 @@ export default function ReportsView({ currentUser }: ReportsViewProps) {
 
         if (!record.date_of_joining) return false;
         const joinedBeforePeriodEnd = record.date_of_joining <= to;
-        const isActiveOrExitedAfterPeriodStart = record.employment_status === 'Active' || (record.exit_date && record.exit_date >= from);
+        const isActiveOrExitedAfterPeriodStart = !(record.exit_date && record.exit_date < from);
 
         return joinedBeforePeriodEnd && isActiveOrExitedAfterPeriodStart;
       });
@@ -903,6 +1032,13 @@ export default function ReportsView({ currentUser }: ReportsViewProps) {
     }
   }, [filteredReportData, isGenerated, fromDate, toDate, selectedBranch, activeHistoryReport]);
 
+  // Run startup validation exactly once when dataset is loaded/imported
+  useEffect(() => {
+    if (hrReportData.length > 0) {
+      validateDatasetOnce(hrReportData);
+    }
+  }, [hrReportData]);
+
   // Auto compile on load or when branch filter or dates change
   useEffect(() => {
     if (hrReportData.length > 0) {
@@ -917,7 +1053,7 @@ export default function ReportsView({ currentUser }: ReportsViewProps) {
       const filtered = cleaned.filter((record) => {
         if (!record.date_of_joining) return false;
         const joinedBeforePeriodEnd = record.date_of_joining <= to;
-        const isActiveOrExitedAfterPeriodStart = record.employment_status === 'Active' || (record.exit_date && record.exit_date >= from);
+        const isActiveOrExitedAfterPeriodStart = !(record.exit_date && record.exit_date < from);
 
         return joinedBeforePeriodEnd && isActiveOrExitedAfterPeriodStart;
       });
@@ -941,7 +1077,7 @@ export default function ReportsView({ currentUser }: ReportsViewProps) {
       const afterDate = cleaned.filter((r) => {
         if (!r.date_of_joining) return false;
         const joinedBeforePeriodEnd = r.date_of_joining <= to;
-        const isActiveOrExitedAfterPeriodStart = r.employment_status === 'Active' || (r.exit_date && r.exit_date >= from);
+        const isActiveOrExitedAfterPeriodStart = !(r.exit_date && r.exit_date < from);
         return joinedBeforePeriodEnd && isActiveOrExitedAfterPeriodStart;
       }).length;
       const afterBranch = filteredReportData.length;
@@ -976,14 +1112,14 @@ export default function ReportsView({ currentUser }: ReportsViewProps) {
     };
   }, []);
 
-  // PRE-CALCULATE METRICS
-  const fromTime = new Date(fromDate).setHours(0, 0, 0, 0);
-  const toTime = new Date(toDate).setHours(23, 59, 59, 999);
-  const fromDateObj = new Date(fromTime);
-  const toDateObj = new Date(toTime);
+  // PRE-CALCULATE METRICS - Normalized to UTC Midnight to prevent timezone offset boundary errors
+  const fromDateObj = new Date(fromDate + 'T00:00:00Z');
+  const toDateObj = new Date(toDate + 'T00:00:00Z');
 
   // Clean and filter raw records by branch
-  const { cleaned: cleanedHRRecords, warnings: hrDataWarnings } = getCleanedRecords(hrReportData, selectedBranch);
+  const { cleaned: cleanedHRRecords, warnings: hrDataWarnings } = useMemo(() => {
+    return getCleanedRecords(hrReportData, selectedBranch);
+  }, [hrReportData, selectedBranch]);
 
   // 1. Total Hires
   const totalHires_live = calculateTotalHires(cleanedHRRecords, fromDateObj, toDateObj);
@@ -1351,15 +1487,6 @@ export default function ReportsView({ currentUser }: ReportsViewProps) {
     console.log(`[Sanity Check Passed] All metrics and department breakdown tables are 100% mathematically consistent.`);
   }
 
-  const formatDatePretty = (val: any) => {
-    if (!val) return '';
-    const d = new Date(val);
-    if (isNaN(d.getTime())) return String(val);
-    const day = String(d.getDate()).padStart(2, '0');
-    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-    return `${day} ${months[d.getMonth()]} ${d.getFullYear()}`;
-  };
-
   // DYNAMIC INSIGHTS / BULLET POINTS COMPILING
   const highestAttritionDept = [...orgSummaryData_live]
     .sort((a, b) => parseFloat(b.attritionPct) - parseFloat(a.attritionPct))[0];
@@ -1461,12 +1588,14 @@ export default function ReportsView({ currentUser }: ReportsViewProps) {
         ? `The average tenure for resigned employees during this reporting timeframe was ${formatTenureLongYMD(avgTenureDays_live)}.`
         : "No employee departures occurred during this timeframe, keeping organizational tenure preserved.");
 
-  // Shadow-aware variables for the 5 new charts
-  const startForNewCharts = isViewingHistory ? new Date(activeHistoryReport.fromDate) : fromDateObj;
-  const endForNewCharts = isViewingHistory ? new Date(activeHistoryReport.toDate) : toDateObj;
+  // Shadow-aware variables for the 5 new charts - UTC aligned
+  const startForNewCharts = isViewingHistory ? new Date(activeHistoryReport.fromDate + 'T00:00:00Z') : fromDateObj;
+  const endForNewCharts = isViewingHistory ? new Date(activeHistoryReport.toDate + 'T00:00:00Z') : toDateObj;
   const branchForNewCharts = isViewingHistory ? activeHistoryReport.branchFilter : selectedBranch;
 
-  const { cleaned: cleanedForNewCharts } = getCleanedRecords(hrReportData, branchForNewCharts);
+  const { cleaned: cleanedForNewCharts } = useMemo(() => {
+    return getCleanedRecords(hrReportData, branchForNewCharts);
+  }, [hrReportData, branchForNewCharts]);
 
   const attritionMonthlyTrendChartData = getMonthlyAttritionTrend(cleanedForNewCharts, startForNewCharts, endForNewCharts);
   const hiringByLocDeptChartData = getHiringByLocationDept(cleanedForNewCharts, startForNewCharts, endForNewCharts);
@@ -2960,7 +3089,27 @@ export default function ReportsView({ currentUser }: ReportsViewProps) {
       </AnimatePresence>
 
       {/* EMPTY STATE BEFORE IMPORT */}
-      {isHydrating ? (
+      {hydrationError ? (
+        <div className="bg-rose-50 border border-dashed border-rose-300 rounded-2xl p-16 text-center max-w-xl mx-auto space-y-4 my-8">
+          <div className="h-14 w-14 bg-rose-100 text-rose-500 rounded-full flex items-center justify-center mx-auto shadow-xs">
+            <AlertCircle className="h-7 w-7" />
+          </div>
+          <div className="space-y-1">
+            <h3 className="text-base font-bold text-slate-800">Hydration Failed</h3>
+            <p className="text-xs text-slate-500 max-w-sm mx-auto leading-relaxed">
+              We couldn't restore your HR dataset. This might be due to a browser storage issue.
+            </p>
+            <p className="text-[10px] text-rose-600 font-mono bg-white/50 p-2 rounded-lg mt-2">{hydrationError}</p>
+          </div>
+          <button
+            onClick={retryHydration}
+            className="px-6 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold shadow-md transition-all cursor-pointer flex items-center gap-2 mx-auto mt-4"
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+            Retry Restoration
+          </button>
+        </div>
+      ) : isHydrating ? (
         <div className="bg-slate-50 border border-dashed border-slate-300 rounded-2xl p-16 text-center max-w-xl mx-auto space-y-4 my-8 animate-pulse">
           <div className="h-14 w-14 bg-indigo-50 text-indigo-400 rounded-full flex items-center justify-center mx-auto shadow-xs">
             <RefreshCw className="h-7 w-7 animate-spin" />
@@ -3090,13 +3239,8 @@ export default function ReportsView({ currentUser }: ReportsViewProps) {
                 </div>
               ) : (
                 <div className="grid grid-cols-1 gap-4.5">
-                  {historyList.map((item) => {
-                    const { cleaned: snapshotCleaned } = getCleanedRecords(hrReportData, item.branchFilter);
-                    const stats = calculateAttritionRate(snapshotCleaned, new Date(item.fromDate), new Date(item.toDate));
-                    const snapshotAttrition = {
-                      exitsCount: stats.exitsCount,
-                      attritionRate: stats.rate
-                    };
+                  {historyWithStats.map((item) => {
+                    const { snapshotAttrition } = item;
                     return (
                       <div
                         key={item.id}

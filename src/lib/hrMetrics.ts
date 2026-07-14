@@ -12,7 +12,10 @@ import {
   canonicalizeLocation,
   canonicalizeDepartment,
   canonicalizeSourceOfHiring,
-  KNOWN_INVALID_RECRUITERS
+  KNOWN_INVALID_RECRUITERS,
+  LOWER_LOCATION_MAP,
+  LOWER_DEPARTMENT_MAP,
+  LOWER_SOURCE_OF_HIRING_MAP
 } from './canonicalize';
 import { validateTAT } from './validate';
 import * as m from './metrics';
@@ -32,6 +35,16 @@ export interface DataWarning {
   message: string;
 }
 
+const validatedDatasets = new WeakSet<HRRecord[]>();
+
+interface ValidationError {
+  id: string;
+  name: string;
+  field: string;
+  val: any;
+  message: string;
+}
+
 /**
  * Filter by branch filter, exclude employees with join date after exit date (data quality issue),
  * apply Layer 1 canonicalization, and compile warning logs.
@@ -43,33 +56,46 @@ export function getCleanedRecords(
   const warnings: DataWarning[] = [];
   
   const cleaned = employees.map(r => {
-    // Apply Layer 1 Canonicalization on Location, Department, and Recruitment Source
-    let plant_location = r.plant_location;
-    try {
-      plant_location = canonicalizeLocation(r.plant_location);
-    } catch (e: any) {
-      console.warn(`[Startup Assertion Warning] ${e.message}`);
-    }
+    // Defensive cleaning
+    const employee_code = String(r.employee_id || '').trim();
+    const name = String(r.name || '').trim();
+    
+    // Validate Relieving Date (bug fix: handle stray space)
+    const rawExitDate = r.exit_date as any;
+    const exit_date = (typeof rawExitDate === 'string' && rawExitDate.trim() === '') ? null : r.exit_date;
 
-    let department = r.department;
-    try {
-      department = canonicalizeDepartment(r.department);
-    } catch (e: any) {
-      console.warn(`[Startup Assertion Warning] ${e.message}`);
-    }
+    // Apply Layer 1 Canonicalization on Location
+    const workLoc = String(r.plant_location || '').trim();
+    const targetLoc = (workLoc === '' || workLoc.toUpperCase() === 'ATTD') ? String(r.pf_location || '').trim() : workLoc;
+    const plant_location = canonicalizeLocation(targetLoc);
 
-    let recruitment_source = r.recruitment_source;
-    try {
-      recruitment_source = canonicalizeSourceOfHiring(r.recruitment_source);
-    } catch (e: any) {
-      console.warn(`[Startup Assertion Warning] ${e.message}`);
+    // Apply Layer 1 Canonicalization on Department
+    const rawDept = r.department;
+    const department = canonicalizeDepartment(rawDept);
+
+    const rawSrc = r.recruitment_source;
+    const recruitment_source = canonicalizeSourceOfHiring(rawSrc);
+
+    let hire_type = (r.hire_type || '').toLowerCase().trim();
+    if (hire_type !== 'new' && hire_type !== 'replacement') {
+      const repFor = String(r.replacement_for || '').trim();
+      const isRepForValid = repFor && !/^(n\/a|not applicable|none|-)$/i.test(repFor);
+      if (isRepForValid) {
+        hire_type = 'replacement';
+      } else {
+        hire_type = 'new';
+      }
     }
 
     return {
       ...r,
+      employee_id: employee_code,
+      name: name,
+      exit_date,
       plant_location,
       department,
-      recruitment_source
+      recruitment_source,
+      hire_type: hire_type as 'new' | 'replacement'
     };
   }).filter(r => {
     // 1. Apply Branch Filter (using the canonicalized plant location!)
@@ -78,16 +104,16 @@ export function getCleanedRecords(
 
     // 2. Data Quality Check: date_of_joining after exit_date (impossible)
     if (r.date_of_joining && r.exit_date) {
-      const joinTime = new Date(r.date_of_joining).getTime();
-      const exitTime = new Date(r.exit_date).getTime();
-      if (joinTime > exitTime) {
+      const joinStr = m.getNormalizedDateString(r.date_of_joining);
+      const exitStr = m.getNormalizedDateString(r.exit_date);
+      if (joinStr && exitStr && joinStr > exitStr) {
         warnings.push({
           employeeId: String(r.employee_id || ''),
           name: r.name || '',
           type: 'JOIN_AFTER_EXIT',
-          message: `Employee ${r.name} (${r.employee_id}) join date is after exit date.`
+          message: `Employee ${r.name} (${r.employee_id}) join date is after exit date. Exit date ignored.`
         });
-        return false; // exclude entirely from calculations as a hard requirement
+        r.exit_date = undefined; // clear invalid exit date instead of dropping the entire record
       }
     }
 
@@ -106,6 +132,98 @@ export function getCleanedRecords(
   });
 
   return { cleaned, warnings };
+}
+
+export function validateDatasetOnce(employees: HRRecord[]) {
+  if (!employees || employees.length === 0) return;
+
+  const startupErrors: ValidationError[] = [];
+  const missingDepts = new Set<string>();
+  const missingSources = new Set<string>();
+  const missingLocations = new Set<string>();
+
+  for (const r of employees) {
+    const employee_code = String(r.employee_id || '').trim();
+    const name = String(r.name || '').trim();
+
+    // Validate Location
+    const workLoc = String(r.plant_location || '').trim();
+    const targetLoc = (workLoc === '' || workLoc.toUpperCase() === 'ATTD') ? String(r.pf_location || '').trim() : workLoc;
+    if (targetLoc !== '') {
+      const normLoc = targetLoc.toLowerCase();
+      if (!LOWER_LOCATION_MAP[normLoc]) {
+        missingLocations.add(targetLoc);
+        startupErrors.push({
+          id: employee_code,
+          name,
+          field: 'Location',
+          val: targetLoc,
+          message: `Location raw value "${targetLoc}" is not in canonical LOCATION_MAP.`
+        });
+        // Auto-canonicalize to dynamically register it
+        canonicalizeLocation(targetLoc);
+      }
+    }
+
+    // Validate Department
+    const rawDept = r.department;
+    if (rawDept !== undefined && rawDept !== null) {
+      const normDept = String(rawDept).trim().toLowerCase();
+      if (normDept !== '' && !LOWER_DEPARTMENT_MAP[normDept]) {
+        missingDepts.add(String(rawDept).trim());
+        startupErrors.push({
+          id: employee_code,
+          name,
+          field: 'Department',
+          val: rawDept,
+          message: `Department raw value "${rawDept}" is not in canonical DEPARTMENT_MAP.`
+        });
+        // Auto-canonicalize to dynamically register it
+        canonicalizeDepartment(rawDept);
+      }
+    }
+
+    // Validate Source of Hiring
+    const rawSrc = r.recruitment_source;
+    if (rawSrc !== undefined && rawSrc !== null) {
+      const normSrc = String(rawSrc).trim().toLowerCase();
+      if (normSrc !== '' && !LOWER_SOURCE_OF_HIRING_MAP[normSrc]) {
+        missingSources.add(String(rawSrc).trim());
+        startupErrors.push({
+          id: employee_code,
+          name,
+          field: 'Source of Hiring',
+          val: rawSrc,
+          message: `Source of Hiring raw value "${rawSrc}" is not in canonical SOURCE_OF_HIRING_MAP.`
+        });
+        // Auto-canonicalize to dynamically register it
+        canonicalizeSourceOfHiring(rawSrc);
+      }
+    }
+  }
+
+  if (startupErrors.length > 0) {
+    const countsByField: Record<string, number> = {};
+    for (const err of startupErrors) {
+      countsByField[err.field] = (countsByField[err.field] || 0) + 1;
+    }
+    const summaryStr = Object.entries(countsByField)
+      .map(([field, count]) => ` - ${field}: ${count} issue(s)`)
+      .join('\n');
+
+    console.warn(
+      `[Startup Assertion Warning] Found ${startupErrors.length} validation mismatch(es) across ${employees.length} records during data load:\n` +
+      `${summaryStr}\n` +
+      `Unique missing Departments: [${Array.from(missingDepts).join(', ')}]\n` +
+      `Unique missing Sources of Hiring: [${Array.from(missingSources).join(', ')}]\n` +
+      `Unique missing Locations: [${Array.from(missingLocations).join(', ')}]\n` +
+      `First 5 detailed mismatches:\n` +
+      startupErrors.slice(0, 5).map(err => ` - EMP: ${err.id} (${err.name}), Field: ${err.field}, Value: "${err.val}"`).join('\n') +
+      (startupErrors.length > 5 ? `\n ... and ${startupErrors.length - 5} more mismatches (suppressed for performance).` : '')
+    );
+  } else {
+    console.log(`[Startup Assertion Validation] Successfully validated dataset: all ${employees.length} records fully matched the canonical maps.`);
+  }
 }
 
 // Delegate metrics calculation functions directly to Layer 3 pure functions
